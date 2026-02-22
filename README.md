@@ -141,6 +141,129 @@ uv run python -m app.cli process photo.jpg -o output.jpg -t default_white \
 uv run pytest tests/ -v
 ```
 
+## 自定义模板开发
+
+只需创建一个新目录并编写两个文件，即可扩展自己的模板，无需修改任何代码。
+
+### 第一步：创建目录
+
+在 `app/templates/` 下新建目录，目录名即为模板 ID：
+
+```
+app/templates/my_template/
+├── config.json
+└── template.svg
+```
+
+### 第二步：编写 config.json
+
+`config.json` 声明模板的元信息和用户可调参数：
+
+```json
+{
+  "id": "my_template",
+  "name": "我的模板",
+  "description": "一句话描述模板风格",
+  "props": [
+    { "key": "border_padding", "label": "边距比例", "type": "number", "default": 0.05 },
+    { "key": "bg_color", "label": "背景颜色", "type": "color", "default": "#FFFFFF" },
+    { "key": "show_logo", "label": "显示Logo", "type": "boolean", "default": true }
+  ]
+}
+```
+
+**参数类型说明：**
+
+| type | 说明 | 示例值 |
+|------|------|--------|
+| `number` | 数值（整数或浮点） | `0.05`、`160` |
+| `color` | 颜色（十六进制） | `"#FFFFFF"` |
+| `boolean` | 布尔开关 | `true` / `false` |
+| `string` | 文本字符串 | `"KODAK 400TX"` |
+
+> `border_padding` 和 `bg_color` 是合成阶段使用的保留参数，建议所有模板都包含。
+
+### 第三步：编写 template.svg
+
+`template.svg` 是一个 Jinja2 + SVG 混合模板。渲染时引擎会注入以下上下文变量：
+
+**`exif` — EXIF 拍摄信息**
+
+| 变量 | 说明 | 示例 |
+|------|------|------|
+| `exif.make` | 相机厂商 | `"Canon"` |
+| `exif.model` | 相机型号 | `"EOS R5"` |
+| `exif.lens_model` | 镜头型号 | `"RF 50mm F1.2L USM"` |
+| `exif.focal_length` | 焦距 | `"50mm"` |
+| `exif.aperture` | 光圈 | `"f/1.8"` |
+| `exif.exposure_time` | 快门速度 | `"1/250s"` |
+| `exif.iso` | 感光度 | `"ISO 100"` |
+| `exif.datetime_original` | 拍摄日期 | `"2024:06:15 14:30:00"` |
+
+**`assets` — Logo 资源**
+
+| 变量 | 说明 |
+|------|------|
+| `assets.make_logo_base64` | 厂商 Logo 的 Base64 data URI（原色） |
+| `assets.make_logo_auto_base64` | 厂商 Logo 的 Base64 data URI（跟随 currentColor） |
+
+**`layout` — 原始图片尺寸**
+
+| 变量 | 说明 |
+|------|------|
+| `layout.image_width` | 图片宽度（像素） |
+| `layout.image_height` | 图片高度（像素） |
+
+**`props` — 用户参数**
+
+即 `config.json` 中定义的参数，用户可通过 CLI `--prop key=value` 覆盖默认值。
+
+### 最小模板示例
+
+以下是一个仅在底部显示相机信息的最小模板：
+
+```svg
+{% set img_w = layout.image_width %}
+{% set img_h = layout.image_height %}
+{% set pad = (img_w * props.border_padding) | int %}
+{% set bar_h = 120 %}
+{% set canvas_w = img_w + pad * 2 %}
+{% set canvas_h = img_h + pad * 2 + bar_h %}
+
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="{{ canvas_w }}" height="{{ canvas_h }}"
+     viewBox="0 0 {{ canvas_w }} {{ canvas_h }}">
+
+    <rect width="100%" height="100%" fill="transparent" />
+
+    <text x="{{ pad }}" y="{{ pad + img_h + pad + 70 }}"
+          font-family="Arial, sans-serif" font-size="40"
+          fill="{{ props.font_color | default('#333') }}">
+        {{ exif.make }} {{ exif.model }} · {{ exif.focal_length }} {{ exif.aperture }}
+    </text>
+</svg>
+```
+
+### 关键约束
+
+1. **SVG 背景必须透明** — 合成阶段由 Pillow 创建背景画布，SVG 层通过 alpha 通道叠加
+2. **画布尺寸必须包含边距** — SVG 的 `width`/`height` 决定最终输出尺寸，需将 `border_padding` 计算在内
+3. **resvg 兼容性** — 栅格化引擎为 resvg，支持大部分 SVG 特性（形状、文字、渐变、滤镜如 `feGaussianBlur`），但不支持 CSS 动画、`foreignObject`、JavaScript
+4. **字体** — 使用系统字体，建议指定通用 fallback（如 `font-family="Arial, Helvetica, sans-serif"`）
+5. **自定义图片位置** — 如果模板需要非对称布局（如胶片模板两侧有额外边栏），在 `config.json` 中添加 `image_offset_x` / `image_offset_y` 参数控制图片在画布中的偏移
+
+### 验证
+
+模板创建后即可直接使用：
+
+```bash
+# 确认模板出现在列表
+uv run python -m app.cli templates
+
+# 测试渲染
+uv run python -m app.cli process photo.jpg -o test_output.jpg -t my_template
+```
+
 ## 项目结构
 
 ```
@@ -148,6 +271,7 @@ PhotoSuit/
 ├── pyproject.toml              # 项目配置与依赖
 ├── app/
 │   ├── cli.py                  # Typer CLI 入口
+│   ├── gui.py                  # Tkinter GUI 入口
 │   ├── pipeline.py             # 5 阶段处理管线
 │   ├── exif_parser.py          # EXIF 解析器
 │   ├── normalizer.py           # 数据归一化（厂商映射、格式化、Logo 加载）
@@ -156,7 +280,10 @@ PhotoSuit/
 │   ├── compositor.py           # 图像合成引擎（Pillow）
 │   ├── assets/logos/           # 厂商 Logo SVG
 │   └── templates/
-│       └── default_white/      # 默认白框模板
+│       ├── default_white/      # 默认白框模板
+│       │   ├── config.json
+│       │   └── template.svg
+│       └── film_strip/         # 胶片边框模板
 │           ├── config.json
 │           └── template.svg
 └── tests/

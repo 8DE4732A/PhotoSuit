@@ -60,7 +60,12 @@ def _calc_canvas_width(context: dict, props: dict) -> int:
     """Calculate the expected canvas width for rasterization."""
     img_w = context["layout"]["image_width"]
     padding = float(props.get("border_padding", 0.05))
-    return int(img_w * (1 + padding * 2))
+    base = int(img_w * (1 + padding * 2))
+    # Account for extra horizontal offsets (e.g. film strip margins)
+    off_x = int(props.get("image_offset_x", 0))
+    if off_x:
+        base += off_x * 2  # symmetric left + right
+    return base
 
 
 def batch_process(

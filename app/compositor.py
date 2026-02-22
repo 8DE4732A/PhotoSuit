@@ -42,10 +42,17 @@ def composite(
     # Create background canvas
     canvas = Image.new("RGB", (canvas_w, canvas_h), bg_color)
 
-    # Paste original image with padding
-    pad_x = int(orig_w * border_padding)
-    pad_y = int(orig_h * border_padding)
-    canvas.paste(original, (pad_x, pad_y))
+    # Paste original image — use explicit offsets if provided, else padding
+    if "image_offset_x" in props or "image_offset_y" in props:
+        off_x = int(props.get("image_offset_x", 0))
+        off_y = int(props.get("image_offset_y", 0))
+        pad_x = int(orig_w * border_padding)
+        pad_y = int(orig_h * border_padding)
+        canvas.paste(original, (off_x + pad_x, off_y + pad_y))
+    else:
+        pad_x = int(orig_w * border_padding)
+        pad_y = int(orig_h * border_padding)
+        canvas.paste(original, (pad_x, pad_y))
 
     # Overlay frame (logos, text, dividers) with alpha compositing
     canvas.paste(frame, (0, 0), mask=frame.split()[3])

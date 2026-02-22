@@ -1,0 +1,18 @@
+{
+  "id": "film_strip",
+  "name": "经典胶片",
+  "description": "模拟35mm胶片边框，含齿孔、帧号和Kodak风格色带",
+  "props": [
+    { "key": "film_base_color", "label": "胶片底色", "type": "color", "default": "#1A1A1A" },
+    { "key": "sprocket_color", "label": "齿孔颜色", "type": "color", "default": "#111111" },
+    { "key": "text_color", "label": "文字颜色", "type": "color", "default": "#FF8C00" },
+    { "key": "frame_number", "label": "帧号", "type": "number", "default": 24 },
+    { "key": "show_color_band", "label": "显示色带", "type": "boolean", "default": true },
+    { "key": "show_exif", "label": "显示拍摄参数", "type": "boolean", "default": true },
+    { "key": "film_stock_label", "label": "胶卷型号", "type": "string", "default": "KODAK 400TX" },
+    { "key": "border_padding", "label": "边距比例", "type": "number", "default": 0.02 },
+    { "key": "bg_color", "label": "背景颜色", "type": "color", "default": "#1A1A1A" },
+    { "key": "image_offset_x", "label": "图片X偏移(px)", "type": "number", "default": 120 },
+    { "key": "image_offset_y", "label": "图片Y偏移(px)", "type": "number", "default": 80 }
+  ]
+}
