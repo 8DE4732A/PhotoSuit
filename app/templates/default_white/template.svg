@@ -1,0 +1,89 @@
+{# default_white template: classic white border with camera info bar #}
+{% set pad = props.border_padding | default(0.05) %}
+{% set img_w = layout.image_width %}
+{% set img_h = layout.image_height %}
+{% set pad_x = (img_w * pad) | int %}
+{% set pad_y = (img_h * pad) | int %}
+{% set bar_h = props.info_bar_height | default(160) | int %}
+{% set canvas_w = img_w + pad_x * 2 %}
+{% set canvas_h = img_h + pad_y * 2 + bar_h + pad_y %}
+{% set font_color = props.font_color | default('#333333') %}
+{% set font_color_2 = props.font_color_secondary | default('#666666') %}
+{% set bg = props.bg_color | default('#FFFFFF') %}
+{% set bar_y = pad_y + img_h + pad_y %}
+{% set logo_h = (bar_h * 0.5) | int %}
+{% set logo_w = (logo_h * 2.5) | int %}
+{% set logo_x = pad_x %}
+{% set logo_y = bar_y + ((bar_h - logo_h) / 2) | int %}
+{% set text_left_x = pad_x + logo_w + (pad_x * 0.6) | int %}
+{% set model_font_size = (bar_h * 0.25) | int %}
+{% set param_font_size = (bar_h * 0.18) | int %}
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="{{ canvas_w }}" height="{{ canvas_h }}"
+     viewBox="0 0 {{ canvas_w }} {{ canvas_h }}">
+
+    {# Fully transparent background — compositor creates the white bg #}
+    <rect width="100%" height="100%" fill="transparent" />
+
+    {# Info bar area #}
+    <g transform="translate(0, {{ bar_y }})">
+
+        {# Left section: Logo + Model #}
+        {% if props.show_logo | default(true) and assets.make_logo_base64 %}
+        <image href="{{ assets.make_logo_base64 }}"
+               x="{{ logo_x }}" y="{{ ((bar_h - logo_h) / 2) | int }}"
+               width="{{ logo_w }}" height="{{ logo_h }}"
+               preserveAspectRatio="xMidYMid meet" />
+        {% else %}
+        <text x="{{ logo_x }}" y="{{ (bar_h / 2 + model_font_size * 0.35) | int }}"
+              font-family="Arial, Helvetica, sans-serif"
+              font-size="{{ model_font_size }}" font-weight="bold"
+              fill="{{ font_color }}">{{ exif.make }}</text>
+        {% endif %}
+
+        {# Vertical divider after logo #}
+        <line x1="{{ text_left_x - (pad_x * 0.3) | int }}"
+              y1="{{ (bar_h * 0.2) | int }}"
+              x2="{{ text_left_x - (pad_x * 0.3) | int }}"
+              y2="{{ (bar_h * 0.8) | int }}"
+              stroke="{{ font_color_2 }}" stroke-width="2" opacity="0.3" />
+
+        {# Model name #}
+        <text x="{{ text_left_x }}" y="{{ (bar_h * 0.42) | int }}"
+              font-family="Arial, Helvetica, sans-serif"
+              font-size="{{ model_font_size }}" font-weight="bold"
+              fill="{{ font_color }}">{{ exif.model }}</text>
+
+        {# Lens model (smaller, below model name) #}
+        {% if exif.lens_model %}
+        <text x="{{ text_left_x }}" y="{{ (bar_h * 0.68) | int }}"
+              font-family="Arial, Helvetica, sans-serif"
+              font-size="{{ param_font_size }}"
+              fill="{{ font_color_2 }}">{{ exif.lens_model }}</text>
+        {% endif %}
+
+        {# Right section: Camera parameters #}
+        {% set params = [] %}
+        {% if exif.focal_length %}{% set _ = params.append(exif.focal_length) %}{% endif %}
+        {% if exif.aperture %}{% set _ = params.append(exif.aperture) %}{% endif %}
+        {% if exif.exposure_time %}{% set _ = params.append(exif.exposure_time) %}{% endif %}
+        {% if exif.iso %}{% set _ = params.append(exif.iso) %}{% endif %}
+
+        <text x="{{ canvas_w - pad_x }}" y="{{ (bar_h * 0.42) | int }}"
+              font-family="Arial, Helvetica, sans-serif"
+              font-size="{{ param_font_size }}" font-weight="bold"
+              fill="{{ font_color }}"
+              text-anchor="end">{{ params | join('  ·  ') }}</text>
+
+        {# Date (smaller, below params) #}
+        {% if exif.datetime_original %}
+        <text x="{{ canvas_w - pad_x }}" y="{{ (bar_h * 0.68) | int }}"
+              font-family="Arial, Helvetica, sans-serif"
+              font-size="{{ (param_font_size * 0.85) | int }}"
+              fill="{{ font_color_2 }}"
+              text-anchor="end">{{ exif.datetime_original }}</text>
+        {% endif %}
+
+    </g>
+</svg>

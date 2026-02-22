@@ -1,0 +1,22 @@
+[project]
+name = "photosuit"
+version = "0.1.0"
+description = "Image border and watermark compositing tool with EXIF-aware SVG templates"
+requires-python = ">=3.12"
+dependencies = [
+    "jinja2>=3.1",
+    "resvg>=0.1.2",
+    "affine>=2.4",
+    "Pillow>=10.0",
+    "typer>=0.12",
+    "exifread>=3.0",
+    "piexif>=1.1",
+]
+
+[project.scripts]
+photosuit = "app.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

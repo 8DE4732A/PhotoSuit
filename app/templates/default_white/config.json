@@ -1,0 +1,13 @@
+{
+  "id": "default_white",
+  "name": "经典白底相框",
+  "description": "底部留白，左侧显示相机Logo，右侧显示拍摄参数",
+  "props": [
+    { "key": "border_padding", "label": "边距比例", "type": "number", "default": 0.05 },
+    { "key": "bg_color", "label": "背景颜色", "type": "color", "default": "#FFFFFF" },
+    { "key": "show_logo", "label": "显示厂商Logo", "type": "boolean", "default": true },
+    { "key": "info_bar_height", "label": "信息栏高度(px)", "type": "number", "default": 160 },
+    { "key": "font_color", "label": "文字颜色", "type": "color", "default": "#333333" },
+    { "key": "font_color_secondary", "label": "次要文字颜色", "type": "color", "default": "#666666" }
+  ]
+}
