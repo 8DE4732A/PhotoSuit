@@ -97,6 +97,23 @@ uv run python -m app.cli batch <输入目录> -o <输出目录> -t <模板ID>
 uv run python -m app.cli batch ./photos -o ./output -t default_white
 ```
 
+#### 使用外置模板目录
+
+所有处理命令均支持 `--templates-dir` 选项，可指定内置模板目录以外的模板路径：
+
+```bash
+# 使用外部模板处理图片
+uv run python -m app.cli process photo.jpg -o output.jpg -t my_custom \
+  --templates-dir /path/to/my_templates
+
+# 列出外部目录中的模板
+uv run python -m app.cli templates --templates-dir /path/to/my_templates
+
+# 批量处理使用外部模板
+uv run python -m app.cli batch ./photos -o ./output -t my_custom \
+  --templates-dir /path/to/my_templates
+```
+
 #### 查看图片 EXIF 信息
 
 ```bash
@@ -135,6 +152,31 @@ uv run python -m app.cli process photo.jpg -o output.jpg -t default_white \
   --prop show_logo=false
 ```
 
+#### 启动模板设计器
+
+模板设计器提供可视化的模板创建与编辑体验，支持 SVG 代码编辑、参数配置、实时预览：
+
+```bash
+# 启动设计器（使用内置模板目录）
+uv run python -m app.cli designer
+
+# 启动设计器（使用外置模板目录）
+uv run python -m app.cli designer --templates-dir /path/to/my_templates
+
+# 也可直接运行模块
+uv run python -m app.designer
+```
+
+设计器也可通过主 GUI 的"工具 -> 模板设计器"菜单打开。
+
+#### 启动 GUI
+
+```bash
+uv run python -m app.gui
+```
+
+GUI 支持在右侧面板选择外置模板目录，选择后模板列表会自动更新。
+
 ### 运行测试
 
 ```bash
@@ -142,6 +184,32 @@ uv run pytest tests/ -v
 ```
 
 ## 自定义模板开发
+
+有两种方式开发模板：
+
+1. **使用模板设计器**（推荐）— 通过可视化工具创建、编辑、实时预览模板
+2. **手动创建文件** — 直接在模板目录下创建 `config.json` 和 `template.svg`
+
+模板可以放在内置目录 `app/templates/` 下，也可以放在任意外部目录中通过 `--templates-dir` 选项指定。
+
+### 使用模板设计器
+
+启动设计器后，界面分为三栏：
+
+- **左侧** — 模板列表、参数测试控件、示例图片选择
+- **中央** — SVG 代码编辑器（带语法高亮）+ 实时预览
+- **右侧** — 配置编辑器（模板 ID、名称、描述）+ 参数定义表格
+
+工作流程：
+
+1. 点击"新建"创建模板（输入模板 ID）
+2. 在右侧配置编辑器填写名称、描述，添加参数定义
+3. 在中央编辑器编写 SVG 模板代码
+4. 选择一张示例图片，实时预览渲染效果
+5. 调整左侧参数测试控件查看不同参数下的效果
+6. Ctrl+S 保存
+
+### 手动创建模板
 
 只需创建一个新目录并编写两个文件，即可扩展自己的模板，无需修改任何代码。
 
@@ -262,6 +330,11 @@ uv run python -m app.cli templates
 
 # 测试渲染
 uv run python -m app.cli process photo.jpg -o test_output.jpg -t my_template
+
+# 如果模板在外部目录
+uv run python -m app.cli templates --templates-dir /path/to/my_templates
+uv run python -m app.cli process photo.jpg -o test_output.jpg -t my_template \
+  --templates-dir /path/to/my_templates
 ```
 
 ## 项目结构
@@ -272,6 +345,7 @@ PhotoSuit/
 ├── app/
 │   ├── cli.py                  # Typer CLI 入口
 │   ├── gui.py                  # Tkinter GUI 入口
+│   ├── designer.py             # 模板设计器 GUI
 │   ├── pipeline.py             # 5 阶段处理管线
 │   ├── exif_parser.py          # EXIF 解析器
 │   ├── normalizer.py           # 数据归一化（厂商映射、格式化、Logo 加载）

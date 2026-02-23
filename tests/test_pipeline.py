@@ -1,5 +1,7 @@
 """Tests for the PhotoSuit processing pipeline."""
 
+import json
+import shutil
 from pathlib import Path
 
 import piexif
@@ -16,7 +18,7 @@ from app.normalizer import (
     normalize_make,
 )
 from app.pipeline import process_image
-from app.renderer import list_templates, render_svg
+from app.renderer import list_templates, load_template_config, render_svg
 
 
 TEST_DIR = Path(__file__).parent
@@ -175,3 +177,97 @@ def test_process_image(tmp_path):
     exif_dict = piexif.load(str(out_path))
     make = exif_dict["0th"].get(piexif.ImageIFD.Make, b"")
     assert b"Canon" in make
+
+
+# --- External templates directory tests ---
+
+
+def _setup_external_template(tmp_path: Path) -> tuple[Path, str]:
+    """Create an external templates directory with a minimal template."""
+    ext_dir = tmp_path / "ext_templates"
+    tpl_id = "test_external"
+    tpl_dir = ext_dir / tpl_id
+    tpl_dir.mkdir(parents=True)
+
+    config = {
+        "id": tpl_id,
+        "name": "External Test Template",
+        "description": "A test template in an external directory",
+        "props": [
+            {"key": "border_padding", "label": "Border", "type": "number", "default": 0.05},
+            {"key": "bg_color", "label": "BG Color", "type": "color", "default": "#FFFFFF"},
+        ],
+    }
+    (tpl_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
+
+    svg = """\
+{% set pad = props.border_padding | default(0.05) %}
+{% set img_w = layout.image_width %}
+{% set img_h = layout.image_height %}
+{% set pad_x = (img_w * pad) | int %}
+{% set pad_y = (img_h * pad) | int %}
+{% set canvas_w = img_w + pad_x * 2 %}
+{% set canvas_h = img_h + pad_y * 2 %}
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="{{ canvas_w }}" height="{{ canvas_h }}"
+     viewBox="0 0 {{ canvas_w }} {{ canvas_h }}">
+    <rect width="100%" height="100%" fill="transparent" />
+</svg>
+"""
+    (tpl_dir / "template.svg").write_text(svg, encoding="utf-8")
+
+    return ext_dir, tpl_id
+
+
+def test_list_templates_external(tmp_path):
+    ext_dir, tpl_id = _setup_external_template(tmp_path)
+
+    tpls = list_templates(templates_dir=ext_dir)
+    assert len(tpls) == 1
+    assert tpls[0]["id"] == tpl_id
+
+
+def test_list_templates_empty_dir(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    tpls = list_templates(templates_dir=empty)
+    assert tpls == []
+
+
+def test_load_template_config_external(tmp_path):
+    ext_dir, tpl_id = _setup_external_template(tmp_path)
+
+    config = load_template_config(tpl_id, templates_dir=ext_dir)
+    assert config["id"] == tpl_id
+    assert config["name"] == "External Test Template"
+    assert len(config["props"]) == 2
+
+
+def test_render_svg_external(tmp_path):
+    ext_dir, tpl_id = _setup_external_template(tmp_path)
+
+    img_path = tmp_path / "test.jpg"
+    _create_test_image(img_path)
+
+    raw = parse_exif(img_path)
+    context = normalize_exif(raw)
+    svg, props = render_svg(tpl_id, context, templates_dir=ext_dir)
+
+    assert "<svg" in svg
+    assert 'xmlns="http://www.w3.org/2000/svg"' in svg
+    assert "border_padding" in props
+
+
+def test_process_image_external(tmp_path):
+    ext_dir, tpl_id = _setup_external_template(tmp_path)
+
+    img_path = tmp_path / "test.jpg"
+    out_path = tmp_path / "output.jpg"
+    _create_test_image(img_path)
+
+    process_image(img_path, out_path, tpl_id, templates_dir=ext_dir)
+
+    assert out_path.exists()
+    output = Image.open(out_path)
+    assert output.size[0] > 800
+    assert output.size[1] > 600

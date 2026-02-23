@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
+import io
 import queue
 import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import colorchooser, filedialog, ttk
 
-from PIL import Image, ImageTk
+from PIL import Image
 
 from app import exif_parser, normalizer, pipeline, renderer
+from app.pipeline import _calc_canvas_width
+from app.rasterizer import rasterize_svg
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".webp"}
 FILETYPES = [
     ("图片文件", "*.jpg *.jpeg *.png *.tiff *.tif *.webp"),
     ("所有文件", "*.*"),
 ]
+
+_DEBOUNCE_MS = 600
+_PREVIEW_MAX = 400
 
 
 class PhotoSuitApp(tk.Tk):
@@ -31,14 +37,34 @@ class PhotoSuitApp(tk.Tk):
         self._output_path = tk.StringVar()
         self._status = tk.StringVar(value="就绪")
         self._template_var = tk.StringVar()
+        self._templates_dir: Path | None = None
         self._templates: list[dict] = renderer.list_templates()
         self._param_widgets: dict[str, tk.Variable] = {}
-        self._preview_photo: ImageTk.PhotoImage | None = None  # prevent GC
+        self._preview_photo: tk.PhotoImage | None = None  # prevent GC
         self._task_queue: queue.Queue[str] = queue.Queue()
 
+        # Live preview state
+        self._preview_render_queue: queue.Queue[Image.Image | str] = queue.Queue()
+        self._preview_after_id: str | None = None
+
+        self._build_menubar()
         self._build_ui()
         self._populate_templates()
         self._poll_queue()
+        self._poll_preview_queue()
+
+    # ── Menu bar ──────────────────────────────────────────────────
+
+    def _build_menubar(self) -> None:
+        menubar = tk.Menu(self)
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        tools_menu.add_command(label="模板设计器", command=self._open_designer)
+        menubar.add_cascade(label="工具", menu=tools_menu)
+        self.config(menu=menubar)
+
+    def _open_designer(self) -> None:
+        from app.designer import TemplateDesigner
+        TemplateDesigner(parent=self, templates_dir=self._templates_dir)
 
     # ── UI construction ──────────────────────────────────────────────
 
@@ -131,6 +157,18 @@ class PhotoSuitApp(tk.Tk):
         self._build_right_content(self._right_inner)
 
     def _build_right_content(self, parent: ttk.Frame) -> None:
+        # Templates directory selector
+        dir_frame = ttk.Frame(parent)
+        dir_frame.pack(fill=tk.X, padx=4, pady=(6, 2))
+
+        ttk.Label(dir_frame, text="模板目录:").pack(side=tk.LEFT)
+        self._tpl_dir_var = tk.StringVar(value="(内置)")
+        ttk.Entry(dir_frame, textvariable=self._tpl_dir_var, state="readonly", width=18).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=4
+        )
+        ttk.Button(dir_frame, text="...", width=3, command=self._select_templates_dir).pack(side=tk.LEFT)
+        ttk.Button(dir_frame, text="重置", width=4, command=self._reset_templates_dir).pack(side=tk.LEFT, padx=(2, 0))
+
         # Template selector
         tpl_frame = ttk.Frame(parent)
         tpl_frame.pack(fill=tk.X, padx=4, pady=(6, 2))
@@ -170,6 +208,24 @@ class PhotoSuitApp(tk.Tk):
 
     # ── Template handling ────────────────────────────────────────────
 
+    def _select_templates_dir(self) -> None:
+        path = filedialog.askdirectory(title="选择模板目录")
+        if not path:
+            return
+        self._templates_dir = Path(path)
+        self._tpl_dir_var.set(str(self._templates_dir))
+        self._reload_templates()
+
+    def _reset_templates_dir(self) -> None:
+        self._templates_dir = None
+        self._tpl_dir_var.set("(内置)")
+        self._reload_templates()
+
+    def _reload_templates(self) -> None:
+        self._templates = renderer.list_templates(templates_dir=self._templates_dir)
+        self._populate_templates()
+        self._schedule_live_preview()
+
     def _populate_templates(self) -> None:
         ids = [t["id"] for t in self._templates]
         self._tpl_combo["values"] = ids
@@ -179,6 +235,7 @@ class PhotoSuitApp(tk.Tk):
 
     def _on_template_change(self, _event: tk.Event | None = None) -> None:
         self._refresh_params()
+        self._schedule_live_preview()
 
     def _refresh_params(self) -> None:
         for w in self._params_frame.winfo_children():
@@ -189,7 +246,7 @@ class PhotoSuitApp(tk.Tk):
         if not tpl_id:
             return
 
-        config = renderer.load_template_config(tpl_id)
+        config = renderer.load_template_config(tpl_id, templates_dir=self._templates_dir)
         for prop in config.get("props", []):
             self._add_param_row(self._params_frame, prop)
 
@@ -234,7 +291,7 @@ class PhotoSuitApp(tk.Tk):
         if not tpl_id:
             return props
 
-        config = renderer.load_template_config(tpl_id)
+        config = renderer.load_template_config(tpl_id, templates_dir=self._templates_dir)
         prop_map = {p["key"]: p for p in config.get("props", [])}
 
         for key, var in self._param_widgets.items():
@@ -269,6 +326,7 @@ class PhotoSuitApp(tk.Tk):
 
         self._show_preview(self._input_path)
         self._show_exif(self._input_path)
+        self._schedule_live_preview()
 
     def _select_dir(self) -> None:
         path = filedialog.askdirectory()
@@ -288,9 +346,10 @@ class PhotoSuitApp(tk.Tk):
 
         for f in sorted(self._input_dir.iterdir()):
             if f.suffix.lower() in SUPPORTED_EXTENSIONS:
-                self._show_preview(f)
                 self._show_exif(f)
                 break
+
+        self._schedule_live_preview()
 
     def _browse_output(self) -> None:
         if self._input_dir:
@@ -306,14 +365,109 @@ class PhotoSuitApp(tk.Tk):
     # ── Preview & EXIF ───────────────────────────────────────────────
 
     def _show_preview(self, path: Path) -> None:
+        """Show a raw image thumbnail (before template rendering)."""
         try:
             img = Image.open(path)
-            img.thumbnail((320, 320))
-            self._preview_photo = ImageTk.PhotoImage(img)
+            img.thumbnail((_PREVIEW_MAX, _PREVIEW_MAX))
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            self._preview_photo = tk.PhotoImage(data=buf.getvalue(), master=self)
             self._preview_label.config(image=self._preview_photo, text="")
         except Exception:
             self._preview_label.config(image="", text="无法预览")
             self._preview_photo = None
+
+    def _schedule_live_preview(self) -> None:
+        """Schedule a debounced live preview render."""
+        if self._preview_after_id is not None:
+            self.after_cancel(self._preview_after_id)
+        self._preview_after_id = self.after(_DEBOUNCE_MS, self._trigger_live_preview)
+
+    def _trigger_live_preview(self) -> None:
+        self._preview_after_id = None
+        # Need a single image (not batch dir) and a template
+        path = self._input_path
+        if not path:
+            # In batch mode, try to find the first image for preview
+            if self._input_dir:
+                for f in sorted(self._input_dir.iterdir()):
+                    if f.suffix.lower() in SUPPORTED_EXTENSIONS:
+                        path = f
+                        break
+            if not path:
+                return
+
+        tpl_id = self._template_var.get()
+        if not tpl_id:
+            return
+
+        props = self._collect_props()
+        templates_dir = self._templates_dir
+        self._status.set("渲染预览中...")
+
+        threading.Thread(
+            target=self._render_live_preview_bg,
+            args=(path, tpl_id, templates_dir, props),
+            daemon=True,
+        ).start()
+
+    def _render_live_preview_bg(
+        self, image_path: Path, tpl_id: str,
+        templates_dir: Path | None, props: dict,
+    ) -> None:
+        try:
+            raw_exif = exif_parser.parse_exif(image_path)
+            context = normalizer.normalize_exif(raw_exif)
+
+            svg_string, merged_props = renderer.render_svg(
+                tpl_id, context, props or None, templates_dir=templates_dir,
+            )
+
+            canvas_width = _calc_canvas_width(context, merged_props)
+            frame_png = rasterize_svg(svg_string, output_width=canvas_width)
+
+            border_padding = float(merged_props.get("border_padding", 0.05))
+            bg_color = str(merged_props.get("bg_color", "#FFFFFF"))
+
+            original = Image.open(image_path).convert("RGB")
+            orig_w, orig_h = original.size
+
+            frame = Image.open(io.BytesIO(frame_png)).convert("RGBA")
+            canvas_w, canvas_h = frame.size
+
+            canvas = Image.new("RGB", (canvas_w, canvas_h), bg_color)
+
+            if "image_offset_x" in merged_props or "image_offset_y" in merged_props:
+                off_x = int(merged_props.get("image_offset_x", 0))
+                off_y = int(merged_props.get("image_offset_y", 0))
+                pad_x = int(orig_w * border_padding)
+                pad_y = int(orig_h * border_padding)
+                canvas.paste(original, (off_x + pad_x, off_y + pad_y))
+            else:
+                pad_x = int(orig_w * border_padding)
+                pad_y = int(orig_h * border_padding)
+                canvas.paste(original, (pad_x, pad_y))
+
+            canvas.paste(frame, (0, 0), mask=frame.split()[3])
+            self._preview_render_queue.put(canvas)
+        except Exception as e:
+            self._preview_render_queue.put(f"预览渲染失败: {e}")
+
+    def _poll_preview_queue(self) -> None:
+        try:
+            result = self._preview_render_queue.get_nowait()
+            if isinstance(result, Image.Image):
+                result.thumbnail((_PREVIEW_MAX, _PREVIEW_MAX))
+                buf = io.BytesIO()
+                result.save(buf, format="PNG")
+                self._preview_photo = tk.PhotoImage(data=buf.getvalue(), master=self)
+                self._preview_label.config(image=self._preview_photo, text="")
+                self._status.set("预览已更新")
+            else:
+                self._status.set(str(result))
+        except queue.Empty:
+            pass
+        self.after(100, self._poll_preview_queue)
 
     def _show_exif(self, path: Path) -> None:
         try:
@@ -369,7 +523,8 @@ class PhotoSuitApp(tk.Tk):
         def task() -> None:
             try:
                 pipeline.process_image(
-                    self._input_path, output, template_id=tpl_id, **props
+                    self._input_path, output, template_id=tpl_id,
+                    templates_dir=self._templates_dir, **props
                 )
                 self._task_queue.put(f"处理完成: {Path(output).name}")
             except Exception as e:
@@ -395,7 +550,8 @@ class PhotoSuitApp(tk.Tk):
         def task() -> None:
             try:
                 results = pipeline.batch_process(
-                    self._input_dir, output, template_id=tpl_id, **props
+                    self._input_dir, output, template_id=tpl_id,
+                    templates_dir=self._templates_dir, **props
                 )
                 self._task_queue.put(f"批量完成: 共处理 {len(results)} 张图片")
             except Exception as e:

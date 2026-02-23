@@ -37,6 +37,7 @@ def process(
     output: Annotated[Path, typer.Option("-o", "--output", help="Output file path")] = None,
     template: Annotated[str, typer.Option("-t", "--template", help="Template ID")] = "default_white",
     prop: Annotated[Optional[list[str]], typer.Option("--prop", help="Template prop override (key=value)")] = None,
+    templates_dir: Annotated[Optional[Path], typer.Option("--templates-dir", help="Custom templates directory")] = None,
 ) -> None:
     """Process a single image with a frame template."""
     from app.pipeline import process_image
@@ -50,7 +51,7 @@ def process(
 
     user_props = _parse_props(prop)
     typer.echo(f"Processing {input_path.name} → {output.name} (template: {template})")
-    process_image(input_path, output, template, **user_props)
+    process_image(input_path, output, template, templates_dir=templates_dir, **user_props)
     typer.echo(f"Done! Output saved to {output}")
 
 
@@ -60,6 +61,7 @@ def batch(
     output_dir: Annotated[Path, typer.Option("-o", "--output", help="Output directory")] = None,
     template: Annotated[str, typer.Option("-t", "--template", help="Template ID")] = "default_white",
     prop: Annotated[Optional[list[str]], typer.Option("--prop", help="Template prop override (key=value)")] = None,
+    templates_dir: Annotated[Optional[Path], typer.Option("--templates-dir", help="Custom templates directory")] = None,
 ) -> None:
     """Batch process all images in a directory."""
     from app.pipeline import batch_process
@@ -73,16 +75,18 @@ def batch(
 
     user_props = _parse_props(prop)
     typer.echo(f"Batch processing {input_dir} → {output_dir} (template: {template})")
-    results = batch_process(input_dir, output_dir, template, **user_props)
+    results = batch_process(input_dir, output_dir, template, templates_dir=templates_dir, **user_props)
     typer.echo(f"Done! Processed {len(results)} images.")
 
 
 @app.command()
-def templates() -> None:
+def templates(
+    templates_dir: Annotated[Optional[Path], typer.Option("--templates-dir", help="Custom templates directory")] = None,
+) -> None:
     """List all available templates."""
     from app.renderer import list_templates
 
-    tpl_list = list_templates()
+    tpl_list = list_templates(templates_dir=templates_dir)
     if not tpl_list:
         typer.echo("No templates found.")
         return
@@ -118,6 +122,16 @@ def info(
     typer.echo(f"Exposure: {exif['exposure_time']}")
     typer.echo(f"ISO: {exif['iso']}")
     typer.echo(f"Date: {exif['datetime_original']}")
+
+
+@app.command()
+def designer(
+    templates_dir: Annotated[Optional[Path], typer.Option("--templates-dir", help="Custom templates directory")] = None,
+) -> None:
+    """Launch the Template Designer GUI."""
+    from app.designer import main as designer_main
+
+    designer_main(templates_dir=templates_dir)
 
 
 if __name__ == "__main__":

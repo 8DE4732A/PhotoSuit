@@ -14,6 +14,7 @@ def process_image(
     input_path: str | Path,
     output_path: str | Path,
     template_id: str = "default_white",
+    templates_dir: Path | None = None,
     **user_props: Any,
 ) -> None:
     """Process a single image through the full pipeline.
@@ -29,6 +30,7 @@ def process_image(
         input_path: Source image file path.
         output_path: Destination for the composited JPEG.
         template_id: Which template directory to use.
+        templates_dir: Optional custom templates directory.
         **user_props: Override template default props (e.g. bg_color="#000").
     """
     input_path = Path(input_path)
@@ -41,7 +43,9 @@ def process_image(
     context = normalize_exif(raw_exif)
 
     # Stage 3: Render SVG
-    svg_string, merged_props = render_svg(template_id, context, user_props or None)
+    svg_string, merged_props = render_svg(
+        template_id, context, user_props or None, templates_dir=templates_dir
+    )
 
     # Stage 4: Rasterize SVG → PNG
     canvas_width = _calc_canvas_width(context, merged_props)
@@ -72,6 +76,7 @@ def batch_process(
     input_dir: str | Path,
     output_dir: str | Path,
     template_id: str = "default_white",
+    templates_dir: Path | None = None,
     **user_props: Any,
 ) -> list[Path]:
     """Process all supported images in a directory.
@@ -89,7 +94,10 @@ def batch_process(
         if img_path.suffix.lower() in supported and not img_path.name.startswith("."):
             out_path = output_dir / f"{img_path.stem}_framed.jpg"
             try:
-                process_image(img_path, out_path, template_id, **user_props)
+                process_image(
+                    img_path, out_path, template_id,
+                    templates_dir=templates_dir, **user_props,
+                )
                 processed.append(out_path)
             except Exception as e:
                 print(f"Error processing {img_path.name}: {e}")
