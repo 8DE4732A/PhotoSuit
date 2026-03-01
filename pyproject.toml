@@ -9,8 +9,10 @@ dependencies = [
     "affine>=2.4",
     "Pillow>=10.0",
     "typer>=0.12",
-    "exifread>=3.0",
+        "exifread>=3.0",
     "piexif>=1.1",
+    "claude-agent-sdk",
+    "python-dotenv>=1.0.1",
 ]
 
 [project.scripts]

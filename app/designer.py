@@ -21,6 +21,7 @@ from app.compositor import composite
 from app.pipeline import _calc_canvas_width
 from app.rasterizer import rasterize_svg
 from app.renderer import TEMPLATES_DIR, get_default_props, load_template_config
+from app.copilot_agent import CopilotManager
 
 TEMPLATE_ID_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
 
@@ -92,6 +93,8 @@ class TemplateDesigner:
         self._preview_after_id: str | None = None
         self._render_queue: queue.Queue[Image.Image | str] = queue.Queue()
         self._preview_photo: tk.PhotoImage | None = None
+        
+        self._copilot = CopilotManager(self._on_copilot_message)
 
         self._build_menubar()
         self._build_ui()
@@ -200,8 +203,17 @@ class TemplateDesigner:
     # ── Edit tab ──────────────────────────────────────────────────
 
     def _build_edit_tab(self, parent: ttk.Frame) -> None:
+        main_pw = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
+        main_pw.pack(fill=tk.BOTH, expand=True)
+
+        left_pane = ttk.Frame(main_pw)
+        main_pw.add(left_pane, weight=2)
+        
+        right_pane = ttk.Frame(main_pw)
+        main_pw.add(right_pane, weight=1)
+
         # Use a PanedWindow so config area and editor can be resized
-        pw = ttk.PanedWindow(parent, orient=tk.VERTICAL)
+        pw = ttk.PanedWindow(left_pane, orient=tk.VERTICAL)
         pw.pack(fill=tk.BOTH, expand=True)
 
         # Top: config + props definition (scrollable)
@@ -225,6 +237,164 @@ class TemplateDesigner:
         editor_frame = ttk.LabelFrame(pw, text="SVG 代码编辑器")
         pw.add(editor_frame, weight=1)
         self._build_editor(editor_frame)
+
+        # Copilot
+        self._build_copilot(right_pane)
+
+    def _build_copilot(self, parent: ttk.Frame) -> None:
+        copilot_frame = ttk.LabelFrame(parent, text="AI Copilot")
+        copilot_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        # Top area: Settings button
+        top_bar = ttk.Frame(copilot_frame)
+        top_bar.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Button(top_bar, text="设置 API", command=self._open_copilot_settings, width=10).pack(side=tk.RIGHT)
+
+        # Chat history
+        self._copilot_chat = tk.Text(copilot_frame, wrap=tk.WORD, state=tk.DISABLED, font=("Helvetica", 11))
+        self._copilot_chat.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        # Tag configuration for chat role styling
+        self._copilot_chat.tag_configure("system", foreground="gray")
+        self._copilot_chat.tag_configure("user", foreground="blue", justify="right")
+        self._copilot_chat.tag_configure("assistant_partial", foreground="black") # replaced entirely using full update logic or just appended
+        self._copilot_chat.tag_configure("assistant", foreground="green")
+        self._copilot_chat.tag_configure("image", foreground="purple")
+
+        # Bottom area: input and buttons
+        input_frame = ttk.Frame(copilot_frame)
+        input_frame.pack(fill=tk.X, padx=4, pady=4)
+
+        self._copilot_input = tk.Text(input_frame, height=3, font=("Helvetica", 11))
+        self._copilot_input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._copilot_input.bind("<Return>", self._on_copilot_send)
+
+        btn_frame = ttk.Frame(input_frame)
+        btn_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(4, 0))
+
+        ttk.Button(btn_frame, text="图片", command=self._copilot_upload_image, width=5).pack(side=tk.TOP, fill=tk.X, pady=(0, 2))
+        ttk.Button(btn_frame, text="发送", command=self._copilot_send, width=5).pack(side=tk.BOTTOM, fill=tk.X)
+
+        self._copilot_image_path: str | None = None
+        self._last_assistant_index: str | None = None
+
+    def _open_copilot_settings(self) -> None:
+        import os
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        base_url = os.environ.get("ANTHROPIC_BASE_URL", "")
+        
+        win = tk.Toplevel(self._root)
+        win.title("Copilot 设置")
+        win.geometry("400x150")
+        win.transient(self._root)
+        win.grab_set()
+
+        ttk.Label(win, text="ANTHROPIC_API_KEY:").grid(row=0, column=0, sticky=tk.W, padx=10, pady=10)
+        key_var = tk.StringVar(value=api_key)
+        ttk.Entry(win, textvariable=key_var, show="*").grid(row=0, column=1, sticky=tk.EW, padx=10, pady=10)
+
+        ttk.Label(win, text="BASE_URL (可选):").grid(row=1, column=0, sticky=tk.W, padx=10, pady=10)
+        url_var = tk.StringVar(value=base_url)
+        ttk.Entry(win, textvariable=url_var).grid(row=1, column=1, sticky=tk.EW, padx=10, pady=10)
+
+        win.columnconfigure(1, weight=1)
+
+        def save():
+            import os
+            os.environ["ANTHROPIC_API_KEY"] = key_var.get().strip()
+            os.environ["ANTHROPIC_BASE_URL"] = url_var.get().strip()
+            # Also save to .env
+            env_path = Path(".env")
+            lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+            new_lines = []
+            for line in lines:
+                if not line.startswith("ANTHROPIC_API_KEY=") and not line.startswith("ANTHROPIC_BASE_URL="):
+                    new_lines.append(line)
+            new_lines.append(f"ANTHROPIC_API_KEY={os.environ['ANTHROPIC_API_KEY']}")
+            if os.environ["ANTHROPIC_BASE_URL"]:
+                new_lines.append(f"ANTHROPIC_BASE_URL={os.environ['ANTHROPIC_BASE_URL']}")
+            env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+            self._on_copilot_message("system", "设置已保存！")
+            win.destroy()
+
+        ttk.Button(win, text="保存", command=save).grid(row=2, column=0, columnspan=2, pady=10)
+
+    def _copilot_upload_image(self) -> None:
+        path = filedialog.askopenfilename(filetypes=FILETYPES, parent=self._root)
+        if path:
+            self._copilot_image_path = path
+            self._on_copilot_message("image", f"[图片已选择: {Path(path).name}]")
+
+    def _on_copilot_send(self, event: tk.Event | None = None) -> str:
+        # Ignore Shift+Enter
+        if event and event.state & 0x0001:
+            return "continue"
+        self._copilot_send()
+        return "break"
+
+    def _copilot_send(self) -> None:
+        text = self._copilot_input.get("1.0", "end-1c").strip()
+        if not text and not self._copilot_image_path:
+            return
+            
+        self._copilot_input.delete("1.0", tk.END)
+        img_path = self._copilot_image_path
+        self._copilot_image_path = None
+        
+        # UI message appending via callback occurs in CopilotManager
+        self._copilot.send_message(text, img_path)
+
+    def _on_copilot_message(self, role: str, text: str) -> None:
+        def update_ui():
+            self._copilot_chat.config(state=tk.NORMAL)
+            
+            if role == "assistant_partial":
+                if not self._last_assistant_index:
+                    self._last_assistant_index = self._copilot_chat.index(tk.INSERT)
+                self._copilot_chat.delete(self._last_assistant_index, tk.END)
+                self._copilot_chat.insert(tk.END, "🤖 " + text + "\n", "assistant")
+            else:
+                self._last_assistant_index = None
+                prefix = {"system": "⚙️ ", "user": "🧑 ", "assistant": "🤖 ", "image": "📸 "}.get(role, "")
+                if role == "user":
+                    self._copilot_chat.insert(tk.END, prefix + text + "\n", "user")
+                else:
+                    self._copilot_chat.insert(tk.END, prefix + text + "\n", role)
+                    
+            self._copilot_chat.see(tk.END)
+            self._copilot_chat.config(state=tk.DISABLED)
+            
+            # If assistant replied, they might have modified the file, so reload if the file was modified externally
+            if role == "assistant":
+                self._check_and_reload()
+                
+        self._root.after(0, update_ui)
+
+    def _check_and_reload(self) -> None:
+        if not self._current_template_id:
+            return
+        # A simple dirty-check strategy: check if the text in the editor matches the file content.
+        # If not, and the editor is not dirty (user hasn't typed), reload from file.
+        # Alternatively, we just reload the template file if Editor isn't modified.
+        if not self._dirty:
+            svg_path = self._templates_dir / self._current_template_id / "template.svg"
+            if svg_path.exists():
+                new_text = svg_path.read_text(encoding="utf-8")
+                old_text = self._editor.get("1.0", "end-1c")
+                if new_text.strip() != old_text.strip():
+                    self._editor.delete("1.0", tk.END)
+                    self._editor.insert("1.0", new_text)
+                    self._editor.edit_modified(False)
+                    self._update_line_numbers()
+                    self._apply_syntax_highlight()
+                    self._schedule_preview()
+            
+            cfg_path = self._templates_dir / self._current_template_id / "config.json"
+            if cfg_path.exists():
+                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                current_props = self._collect_config()["props"]
+                if len(cfg.get("props", [])) != len(current_props):
+                    self._load_template(self._current_template_id)
 
     def _build_config_section(self, parent: ttk.Frame) -> None:
         config_frame = ttk.LabelFrame(parent, text="配置编辑器")
@@ -424,6 +594,13 @@ class TemplateDesigner:
 
         # Build param test widgets
         self._rebuild_param_test(config)
+
+        self._copilot.set_template(tpl_id, self._templates_dir / tpl_id)
+        # Clear copilot chat area
+        if hasattr(self, "_copilot_chat"):
+            self._copilot_chat.config(state=tk.NORMAL)
+            self._copilot_chat.delete("1.0", tk.END)
+            self._copilot_chat.config(state=tk.DISABLED)
 
         self._dirty = False
         self._status_var.set(f"已加载: {tpl_id}")
